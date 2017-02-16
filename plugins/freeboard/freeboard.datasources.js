@@ -568,7 +568,7 @@ freeboard.loadDatasourcePlugin({
                 // **required** : Set to true if this setting is required for the datasource to be created.
                 "required" : true
 			}
-			
+
 		],
 		// **newInstance(settings, newInstanceCallback, updateCallback)** (required) : A function that will be called when a new instance of this plugin is requested.
 		// * **settings** : A javascript object with the initial settings set by the user. The names of the properties in the object will correspond to the setting names defined above.
@@ -594,11 +594,11 @@ freeboard.loadDatasourcePlugin({
 		// Good idea to create a variable to hold on to our settings, because they might change in the future. See below.
 		var currentSettings = settings;
 
-		
+
 
 		/* This is some function where I'll get my data from somewhere */
 
- 	
+
 		function getData()
 		{
 
@@ -606,11 +606,11 @@ freeboard.loadDatasourcePlugin({
 		 var conn = skynet.createConnection({
     		"uuid": currentSettings.uuid,
     		"token": currentSettings.token,
-    		"server": currentSettings.server, 
+    		"server": currentSettings.server,
     		"port": currentSettings.port
-  				});	
-			 
-			 conn.on('ready', function(data){	
+  				});
+
+			 conn.on('ready', function(data){
 
 			 	conn.on('message', function(message){
 
@@ -622,7 +622,7 @@ freeboard.loadDatasourcePlugin({
 			 });
 			}
 
-	
+
 
 		// **onSettingsChanged(newSettings)** (required) : A public function we must implement that will be called when a user makes a change to the settings.
 		self.onSettingsChanged = function(newSettings)
@@ -641,13 +641,147 @@ freeboard.loadDatasourcePlugin({
 		// **onDispose()** (required) : A public function we must implement that will be called when this instance of this plugin is no longer needed. Do anything you need to cleanup after yourself here.
 		self.onDispose = function()
 		{
-		
+
 			//conn.close();
 		}
 
 		// Here we call createRefreshTimer with our current settings, to kick things off, initially. Notice how we make use of one of the user defined settings that we setup earlier.
 	//	createRefreshTimer(currentSettings.refresh_time);
 	}
+
+	/*************
+		* Losant Datasource plugin
+	*************/
+
+	freeboard.loadDatasourcePlugin({
+		"type_name"   : "losant_device_data",
+		"display_name": "Losant Device Data",
+		"description" : "Query the Losant API for a device's most recently reported attribute value.",
+		"settings"    : [
+			{
+				"name"         : "applicationId",
+				"display_name" : "Application ID",
+				"type"         : "text",
+				"required" : true
+			},
+			{
+				"name"					: "applicationToken",
+				"display_name"	: "Application Token",
+				"type"					: "text",
+				"description"  : "Token must have permission to perform last value queries.",
+				"required"			: true
+			},
+			{
+				"name"        	: "deviceId",
+				"display_name"	: "Device ID",
+				"type"        	: "text",
+				"required"			: true
+			},
+			{
+				"name"         	: "attribute",
+				"display_name" 	: "Attribute",
+				"type"         	: "text",
+				"required" 			: true
+			},
+			{
+				"name"         	: "refreshTime",
+				"display_name" 	: "Refresh Time (ms)",
+				"type"         	: "text",
+				"default_value"	: 60000,
+				"required" 			: true
+			}
+		],
+		newInstance   : function(settings, newInstanceCallback, updateCallback)
+		{
+			newInstanceCallback(new myDatasourcePlugin(settings, updateCallback));
+		}
+	});
+	var myDatasourcePlugin = function(settings, updateCallback)
+	{
+		// a constant
+		var self = this;
+		var currentSettings = settings;
+
+		function getData() {
+			return getDeviceData(currentSettings.applicationId, currentSettings.deviceId, currentSettings.attribute, currentSettings.applicationToken)
+				.then(function(data) {
+					return updateCallback(data);
+				}).fail(function(err) {
+					return updateCallback({
+						code: err && err.status,
+						message: err && err.responseJSON && err.responseJSON.message,
+						type: err && err.responseJSON && err.responseJSON.type,
+						value: null, // so the gauge stops showing the previous value
+						time: new Date() // set to now
+					});
+				});
+		}
+
+		function getDeviceData(applicationId, deviceId, attribute, token) {
+			var query = {
+				attribute: attribute,
+				deviceIds: [deviceId]
+			};
+			return $.ajax({
+				type: 'POST',
+				url: 'https://api.losant.com/applications/'+applicationId+'/data/last-value-query',
+				data: JSON.stringify(query),
+				dataType: 'json',
+				beforeSend: function (xhr) {
+					xhr.setRequestHeader('Authorization', 'Bearer ' + token);
+				},
+				contentType: 'application/json'
+			}).then(function(data) {
+				// let's pare down to just a value and a timestamp
+				return {
+					value: data && data[deviceId] && data[deviceId].data && data[deviceId].data[attribute],
+					time: data && data[deviceId] && new Date(data[deviceId].time)
+				};
+			});
+		}
+
+		// You'll probably want to implement some sort of timer to refresh your data every so often.
+		var refreshTimer;
+
+		function createRefreshTimer(interval)
+		{
+			if(refreshTimer)
+			{
+				clearInterval(refreshTimer);
+			}
+
+			refreshTimer = setInterval(function()
+			{
+				// Here we call our getData function to update freeboard with new data.
+				getData();
+			}, interval);
+		}
+
+		// **onSettingsChanged(newSettings)** (required) : A public function we must implement that will be called when a user makes a change to the settings.
+		self.onSettingsChanged = function(newSettings)
+		{
+			// Here we update our current settings with the variable that is passed in.
+			currentSettings = newSettings;
+		};
+
+		// **updateNow()** (required) : A public function we must implement that will be called when the user wants to manually refresh the datasource
+		self.updateNow = function()
+		{
+			// Most likely I'll just call getData() here.
+			getData();
+		};
+
+		// **onDispose()** (required) : A public function we must implement that will be called when this instance of this plugin is no longer needed. Do anything you need to cleanup after yourself here.
+		self.onDispose = function()
+		{
+			// Probably a good idea to get rid of our timer.
+			clearInterval(refreshTimer);
+			refreshTimer = undefined;
+		};
+
+		// Here we call createRefreshTimer with our current settings, to kick things off, initially. Notice how we make use of one of the user defined settings that we setup earlier.
+		createRefreshTimer(currentSettings.refreshTime);
+	};
 
 
 }());
